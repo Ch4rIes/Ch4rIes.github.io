@@ -1,0 +1,40 @@
+@import url('https://fonts.cdnfonts.com/css/maharlika');
+
+/* Fallback font is Open Sans, a Google font that has a modern and clean look. 
+   You may replace the URL with the Maharlika font if it is available. */
+body, html {
+    height: 100%;
+    margin: 0;
+    font-family: 'Maharlika', sans-serif; /* Replace 'Open Sans' with 'Maharlika' if the font is available */
+}
+
+.container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+}
+
+.content {
+    text-align: center;
+}
+
+h1 {
+    font-size: 50px;
+    margin: 0.5em 0;
+}
+
+p {
+    font-size: 20px;
+    margin: 0.25em 0;
+}
+
+.links a {
+    text-decoration: none;
+    color: black;
+    margin: 15px;
+    font-size: 20px;
+    display: inline-block;
+}
+
+/* Add additional styling for hover effects, active states, etc., as needed. */
