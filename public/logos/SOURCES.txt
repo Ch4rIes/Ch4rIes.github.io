@@ -1,0 +1,9 @@
+Company logos used to identify prior employers. Original trademarks belong to their respective owners. Monochrome presentation is applied in CSS.
+HRT: https://www.hudsonrivertrading.com/wp-content/uploads/2024/04/01-HRT-Primary-Logo-with-%C2%AE-Q2-2024.svg
+Meta: https://cdn.simpleicons.org/meta
+Stripe: https://cdn.simpleicons.org/stripe
+AWS: https://commons.wikimedia.org/wiki/File:Amazon_Web_Services_2025.svg (public-domain logo geometry)
+Arista: https://commons.wikimedia.org/wiki/File:Arista-networks-logo.svg (public-domain logo geometry)
+Simple Icons: https://github.com/simple-icons/simple-icons (CC0)
+
+HRT: orange fills changed to #222222; original white letterforms preserved.
