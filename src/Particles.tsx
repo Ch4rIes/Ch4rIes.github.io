@@ -28,24 +28,38 @@ function randomSource(initial: number) {
   return () => { seed = seed * 16807 % 2147483647; return (seed - 1) / 2147483646; };
 }
 const random = randomSource(193);
-const terrain = Array.from({ length: 5400 }, (_, i) => {
-  const x = -4.3 + (i % 100) * .087 + (random() - .5) * .045;
-  const z = -2.7 + Math.floor(i / 100) * .102 + (random() - .5) * .045;
-  return { x, z, height: reward(x, z), size: .55 + random() * .7 };
-});
-type Agent = { x: number; z: number; vx: number; vz: number; phase: number; age: number; life: number; trail: Array<{ x: number; z: number }> };
-function createScene() {
-  const rand = randomSource(281);
-  const spawn = (): Agent => ({ x: (rand() - .5) * 7, z: (rand() - .5) * 4.8, vx: 0, vz: 0,
-    phase: rand() * TAU, age: 0, life: 17 + rand() * 18, trail: [] });
-  return { time: 0, scroll: 0, velocity: 0, trailClock: 0, spawn,
-    agents: Array.from({ length: 72 }, () => { const agent = spawn(); agent.age = rand() * agent.life; return agent; }) };
+type SurfacePoint = { x: number; z: number; height: number };
+const terrain: Array<SurfacePoint & { size: number; intensity: number }> = [];
+// Importance sampling makes slopes read through density, without a visible grid.
+while (terrain.length < 11500) {
+  const x = (random() - .5) * 9.2;
+  const z = (random() - .5) * 5.6;
+  const height = reward(x, z);
+  const footprint = Math.exp(-Math.pow(x / 4.2, 8) - Math.pow((z + .15 * Math.sin(x)) / 2.25, 6));
+  if (random() > footprint * (.20 + Math.min(.68, height * .39))) continue;
+  const slope = gradient(x, z);
+  terrain.push({ x, z, height, size: .40 + random() * .55,
+    intensity: .22 + Math.min(.25, height * .12) + Math.min(.13, Math.max(0, slope.x * .13 - slope.z * .10)) });
 }
+// Continuous streams follow exploratory ascent paths. Their density increases as
+// progress slows near a summit, and their ends fade before the next exploration.
+const streams = Array.from({ length: 190 }, () => {
+  let x = (random() - .5) * 7.8, z = (random() - .5) * 4.8;
+  const phase = random() * TAU;
+  const path: SurfacePoint[] = [];
+  for (let step = 0; step < 100; step++) {
+    path.push({ x, z, height: reward(x, z) });
+    const slope = gradient(x, z);
+    const norm = Math.max(.45, Math.hypot(slope.x, slope.z));
+    x += slope.x / norm * .065 + Math.sin(step * .10 + phase) * .014;
+    z += slope.z / norm * .065 + Math.cos(step * .08 + phase) * .014;
+  }
+  return { path, phase, speed: .025 + random() * .018 };
+});
 
 export default function Particles() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const scene = useRef<ReturnType<typeof createScene> | null>(null);
-  if (!scene.current) scene.current = createScene();
+  const scene = useRef({ time: 0, scroll: 0, velocity: 0 });
   const [paused, setPaused] = useState(false);
 
   useEffect(() => {
@@ -55,78 +69,79 @@ export default function Particles() {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     let width = innerWidth, height = innerHeight, frame = 0, last = 0;
     let previousScroll = window.scrollY;
-    const current = scene.current!;
+    const current = scene.current;
+    const batches: number[][] = Array.from({ length: 14 }, () => []);
     const draw = (now: number) => {
       const still = paused || reduced.matches;
       if (!still && now - last < 25) { frame = requestAnimationFrame(draw); return; }
       const dt = Math.min((now - last) / 1000, .05);
       last = now;
       if (!still) {
-        const target = window.scrollY;
+        const target = Math.max(0, window.scrollY);
         const velocity = Math.max(-2, Math.min(2, (target - previousScroll) / Math.max(height * dt, 1)));
         current.velocity += (velocity - current.velocity) * (1 - Math.exp(-dt * 5));
         current.scroll += (target / height - current.scroll) * (1 - Math.exp(-dt * 6));
-        current.time += dt;
+        current.time += dt * (1 + Math.abs(current.velocity) * .2);
         previousScroll = target;
-        current.trailClock += dt;
-        const recordTrail = current.trailClock > .10;
-        if (recordTrail) current.trailClock = 0;
-        for (let i = 0; i < current.agents.length; i++) {
-          const agent = current.agents[i];
-          agent.age += dt;
-          if (agent.age > agent.life) { current.agents[i] = current.spawn(); continue; }
-          const grad = gradient(agent.x, agent.z);
-          const slope = Math.hypot(grad.x, grad.z);
-          // Finish successful climbs sooner so summits do not become crowded.
-          if (slope < .13 && agent.age > 7) agent.age += dt * 2.5;
-          const norm = Math.max(.5, slope);
-          const exploration = .09 + Math.abs(current.velocity) * .07;
-          const vx = grad.x / norm * .36 + Math.sin(current.time * .7 + agent.phase) * exploration;
-          const vz = grad.z / norm * .36 + Math.cos(current.time * .57 + agent.phase * 2) * exploration;
-          const damping = 1 - Math.exp(-dt * 3);
-          agent.vx += (vx - agent.vx) * damping;
-          agent.vz += (vz - agent.vz) * damping;
-          agent.x = Math.max(-4.15, Math.min(4.15, agent.x + agent.vx * dt));
-          agent.z = Math.max(-2.6, Math.min(2.6, agent.z + agent.vz * dt));
-          if (recordTrail) { agent.trail.push({ x: agent.x, z: agent.z }); if (agent.trail.length > 19) agent.trail.shift(); }
-        }
+
       }
       const scroll = reduced.matches ? 0 : current.scroll;
       const time = reduced.matches ? 0 : current.time;
       const reading = Math.min(1, scroll / .8);
-      const yaw = -.16 + Math.sin(scroll * .35) * .25 + Math.sin(time * .035) * .025;
+      const yaw = -.22 + Math.atan(scroll * .4) * .36 + Math.sin(time * .045) * .018;
       const sin = Math.sin(yaw), cos = Math.cos(yaw);
       const vertical = Math.min(height * .19, width * .27);
-      const project = (x: number, z: number, elevation: number) => ({
-        x: width * .5 + (x * cos - z * sin) * width * .143,
-        y: height * (.88 - reading * .08) + (z * cos + x * sin) * vertical * .30 - elevation * vertical,
-      });
+      const project = (x: number, z: number, elevation: number) => {
+        // A long, slow wave carries both the surface and the uphill streams.
+        const wave = Math.sin(x * .85 + z * .55 - time * .22 + scroll * .22);
+        const driftX = x + .13 * Math.sin(z * .9 + time * .12 + scroll * .13);
+        const driftZ = z + wave * .17;
+        return {
+          x: width * .5 + (driftX * cos - driftZ * sin) * width * .15,
+          y: height * (.88 - reading * .08) + (driftZ * cos + driftX * sin) * vertical * .35
+            - (elevation + wave * .12) * vertical,
+        };
+      };
       const opacity = (x: number, y: number) => {
         const title = Math.exp(-Math.pow((x / width - .5) / .34, 4) - Math.pow((y / height - .43) / .18, 4));
         const text = Math.exp(-Math.pow((x / width - .5) / .41, 8));
-        return 1 - .78 * (title * (1 - reading) + text * reading);
+        return 1 - .70 * title * (1 - reading) - .52 * text * reading;
       };
       ctx.clearRect(0, 0, width, height);
+      for (const batch of batches) batch.length = 0;
+      const add = (x: number, y: number, radius: number, alpha: number) => {
+        if (x < -3 || x > width + 3 || y < -3 || y > height + 3) return;
+        const shade = Math.min(13, Math.floor(alpha * 20));
+        if (shade > 0) batches[shade].push(x, y, radius);
+      };
       for (let i = 0; i < terrain.length; i += width < 640 ? 2 : 1) {
         const p = terrain[i];
         const screen = project(p.x, p.z, p.height);
-        const boundary = Math.min(1, (4.35 - Math.abs(p.x)) * 2, (2.8 - Math.abs(p.z)) * 2);
-        const alpha = (.22 + p.height * .14) * boundary * opacity(screen.x, screen.y);
-        ctx.fillStyle = `rgba(74,98,108,${alpha})`;
-        ctx.beginPath(); ctx.arc(screen.x, screen.y, p.size * (width < 640 ? .82 : 1), 0, TAU); ctx.fill();
+        add(screen.x, screen.y, p.size * (width < 640 ? .76 : 1), p.intensity * opacity(screen.x, screen.y));
       }
-      for (const agent of current.agents) {
-        const fade = Math.max(0, Math.min(1, agent.age / 2, (agent.life - agent.age) / 3));
-        for (let i = 0; i < agent.trail.length; i += 2) {
-          const tail = agent.trail[i];
-          const p = project(tail.x, tail.z, reward(tail.x, tail.z));
-          ctx.fillStyle = `rgba(146,105,62,${.30 * (i / agent.trail.length) * fade * opacity(p.x, p.y)})`;
-          ctx.beginPath();ctx.arc(p.x, p.y, .85, 0, TAU);ctx.fill();
+      for (let streamIndex = 0; streamIndex < streams.length; streamIndex += width < 640 ? 2 : 1) {
+        const stream = streams[streamIndex];
+        for (let dot = 0; dot < 17; dot++) {
+          const u = (dot / 17 + stream.phase / TAU + time * stream.speed + scroll * .022) % 1;
+          const position = u * (stream.path.length - 1);
+          const index = Math.floor(position), blend = position - index;
+          const a = stream.path[index], b = stream.path[Math.min(index + 1, stream.path.length - 1)];
+          const p = project(a.x + (b.x - a.x) * blend, a.z + (b.z - a.z) * blend, a.height + (b.height - a.height) * blend);
+          const fade = Math.min(1, u * 8, (1 - u) * 7);
+          const intensity = (.38 + .20 * Math.sin(u * Math.PI)) * fade * opacity(p.x, p.y);
+          add(p.x, p.y, width < 640 ? .75 : 1.03, intensity);
         }
-        const p = project(agent.x, agent.z, reward(agent.x, agent.z));
-        const alpha = .85 * fade * opacity(p.x, p.y);
-        ctx.fillStyle = `rgba(145,97,48,${alpha})`;
-        ctx.beginPath();ctx.arc(p.x, p.y, width < 640 ? 1.75 : 2.1, 0, TAU);ctx.fill();
+      }
+      // One neutral ink, with batched shades keeping the denser field inexpensive.
+      for (let shade = 1; shade < batches.length; shade++) {
+        const batch = batches[shade];
+        ctx.fillStyle = `rgba(42,42,42,${shade / 20})`;
+        ctx.beginPath();
+        for (let i = 0; i < batch.length; i += 3) {
+          ctx.moveTo(batch[i] + batch[i + 2], batch[i + 1]);
+          ctx.arc(batch[i], batch[i + 1], batch[i + 2], 0, TAU);
+        }
+        ctx.fill();
       }
       if (!still && !document.hidden) frame = requestAnimationFrame(draw);
     };
