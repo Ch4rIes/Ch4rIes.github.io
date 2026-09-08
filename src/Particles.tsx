@@ -1,18 +1,51 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Small independent paths gather into a coherent current: order from complexity.
 const TAU = Math.PI * 2;
-let seed = 83;
-const random = () => { seed = seed * 16807 % 2147483647; return (seed - 1) / 2147483646; };
-const particles = Array.from({ length: 5800 }, () => ({
-  u: random(), strand: Math.floor(random() * 3),
-  offset: (random() + random() + random() - 1.5) / 1.5,
-  depth: random(), size: .55 + random() * 1.1, phase: random() * TAU,
-}));
+const hills = [
+  { x: -1.7, z: .35, height: 1.2, spread: 1.1 },
+  { x: 1.2, z: -.65, height: 1.65, spread: .95 },
+  { x: 2.65, z: 1.5, height: .9, spread: .85 },
+];
+// An artistic reward surface; agents use noisy gradient ascent, not a trained RL policy.
+function reward(x: number, z: number) {
+  let value = .07 * Math.sin(x * 1.4) * Math.cos(z);
+  for (const hill of hills) value += hill.height * Math.exp(-((x - hill.x) ** 2 + (z - hill.z) ** 2) / (2 * hill.spread ** 2));
+  return value;
+}
+function gradient(x: number, z: number) {
+  let dx = .098 * Math.cos(x * 1.4) * Math.cos(z);
+  let dz = -.07 * Math.sin(x * 1.4) * Math.sin(z);
+  for (const hill of hills) {
+    const variance = hill.spread ** 2;
+    const value = hill.height * Math.exp(-((x - hill.x) ** 2 + (z - hill.z) ** 2) / (2 * variance));
+    dx -= value * (x - hill.x) / variance;
+    dz -= value * (z - hill.z) / variance;
+  }
+  return { x: dx, z: dz };
+}
+function randomSource(initial: number) {
+  let seed = initial;
+  return () => { seed = seed * 16807 % 2147483647; return (seed - 1) / 2147483646; };
+}
+const random = randomSource(193);
+const terrain = Array.from({ length: 5400 }, (_, i) => {
+  const x = -4.3 + (i % 100) * .087 + (random() - .5) * .045;
+  const z = -2.7 + Math.floor(i / 100) * .102 + (random() - .5) * .045;
+  return { x, z, height: reward(x, z), size: .55 + random() * .7 };
+});
+type Agent = { x: number; z: number; vx: number; vz: number; phase: number; age: number; life: number; trail: Array<{ x: number; z: number }> };
+function createScene() {
+  const rand = randomSource(281);
+  const spawn = (): Agent => ({ x: (rand() - .5) * 7, z: (rand() - .5) * 4.8, vx: 0, vz: 0,
+    phase: rand() * TAU, age: 0, life: 17 + rand() * 18, trail: [] });
+  return { time: 0, scroll: 0, velocity: 0, trailClock: 0, spawn,
+    agents: Array.from({ length: 72 }, () => { const agent = spawn(); agent.age = rand() * agent.life; return agent; }) };
+}
 
 export default function Particles() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const state = useRef({ time: 0, scroll: 0, velocity: 0 });
+  const scene = useRef<ReturnType<typeof createScene> | null>(null);
+  if (!scene.current) scene.current = createScene();
   const [paused, setPaused] = useState(false);
 
   useEffect(() => {
@@ -22,49 +55,78 @@ export default function Particles() {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     let width = innerWidth, height = innerHeight, frame = 0, last = 0;
     let previousScroll = window.scrollY;
+    const current = scene.current!;
     const draw = (now: number) => {
       const still = paused || reduced.matches;
       if (!still && now - last < 25) { frame = requestAnimationFrame(draw); return; }
       const dt = Math.min((now - last) / 1000, .05);
       last = now;
-      const current = state.current;
       if (!still) {
         const target = window.scrollY;
         const velocity = Math.max(-2, Math.min(2, (target - previousScroll) / Math.max(height * dt, 1)));
         current.velocity += (velocity - current.velocity) * (1 - Math.exp(-dt * 5));
-        current.scroll += (target / height - current.scroll) * (1 - Math.exp(-dt * 7));
-        current.time += dt * (.6 + Math.abs(current.velocity) * .55);
+        current.scroll += (target / height - current.scroll) * (1 - Math.exp(-dt * 6));
+        current.time += dt;
         previousScroll = target;
+        current.trailClock += dt;
+        const recordTrail = current.trailClock > .10;
+        if (recordTrail) current.trailClock = 0;
+        for (let i = 0; i < current.agents.length; i++) {
+          const agent = current.agents[i];
+          agent.age += dt;
+          if (agent.age > agent.life) { current.agents[i] = current.spawn(); continue; }
+          const grad = gradient(agent.x, agent.z);
+          const slope = Math.hypot(grad.x, grad.z);
+          // Finish successful climbs sooner so summits do not become crowded.
+          if (slope < .13 && agent.age > 7) agent.age += dt * 2.5;
+          const norm = Math.max(.5, slope);
+          const exploration = .09 + Math.abs(current.velocity) * .07;
+          const vx = grad.x / norm * .36 + Math.sin(current.time * .7 + agent.phase) * exploration;
+          const vz = grad.z / norm * .36 + Math.cos(current.time * .57 + agent.phase * 2) * exploration;
+          const damping = 1 - Math.exp(-dt * 3);
+          agent.vx += (vx - agent.vx) * damping;
+          agent.vz += (vz - agent.vz) * damping;
+          agent.x = Math.max(-4.15, Math.min(4.15, agent.x + agent.vx * dt));
+          agent.z = Math.max(-2.6, Math.min(2.6, agent.z + agent.vz * dt));
+          if (recordTrail) { agent.trail.push({ x: agent.x, z: agent.z }); if (agent.trail.length > 19) agent.trail.shift(); }
+        }
       }
-      const time = reduced.matches ? 0 : current.time;
       const scroll = reduced.matches ? 0 : current.scroll;
-      const velocity = reduced.matches ? 0 : current.velocity;
-      const scene = Math.min(1, scroll / .8);
-      const count = width < 640 ? 3200 : particles.length;
+      const time = reduced.matches ? 0 : current.time;
+      const reading = Math.min(1, scroll / .8);
+      const yaw = -.16 + Math.sin(scroll * .35) * .25 + Math.sin(time * .035) * .025;
+      const sin = Math.sin(yaw), cos = Math.cos(yaw);
+      const vertical = Math.min(height * .19, width * .27);
+      const project = (x: number, z: number, elevation: number) => ({
+        x: width * .5 + (x * cos - z * sin) * width * .143,
+        y: height * (.88 - reading * .08) + (z * cos + x * sin) * vertical * .30 - elevation * vertical,
+      });
+      const opacity = (x: number, y: number) => {
+        const title = Math.exp(-Math.pow((x / width - .5) / .34, 4) - Math.pow((y / height - .43) / .18, 4));
+        const text = Math.exp(-Math.pow((x / width - .5) / .41, 8));
+        return 1 - .78 * (title * (1 - reading) + text * reading);
+      };
       ctx.clearRect(0, 0, width, height);
-      for (let i = 0; i < count; i++) {
-        const point = particles[i];
-        const u = ((point.u + time * .022 + scroll * .055) % 1 + 1) % 1;
-        // Each layer follows the same broad curve, separating and rejoining slowly.
-        const wave = u * TAU * .83 + scroll * .43 - .9;
-        const spine = .79 - u * .13 + Math.sin(wave) * .19;
-        const fold = Math.sin(u * TAU * 1.05 + point.strand * .7 + time * .065 + scroll * .32);
-        const spread = .022 + .10 * Math.pow(Math.sin(u * Math.PI + .35), 2);
-        const lane = (point.strand - 1) * .037 * Math.cos(wave + time * .06);
-        const x = width * (u * 1.35 - .175);
-        const y = height * (spine + lane + point.offset * spread + fold * .07 * point.depth
-          - scene * .12 + velocity * .025 * Math.sin(u * Math.PI));
-        const edge = Math.min(1, u * 10, (1 - u) * 10);
-        // Reserve a calm pocket for the introduction and soften behind the reading column.
-        const heroQuiet = Math.exp(-Math.pow((x / width - .5) / .34, 4) - Math.pow((y / height - .43) / .20, 4));
-        const readingQuiet = Math.exp(-Math.pow((x / width - .5) / .38, 8));
-        const quiet = heroQuiet * (1 - scene) + readingQuiet * scene;
-        const alpha = (.24 + point.depth * .27) * edge * (1 - quiet * .76);
-        const size = point.size * (width < 640 ? .85 : 1) * (.75 + point.depth * .45);
-        ctx.fillStyle = `rgba(${point.strand === 0 ? '61,86,91' : point.strand === 1 ? '82,111,122' : '127,117,94'},${alpha})`;
-        ctx.beginPath();
-        ctx.arc(x, y, size, 0, TAU);
-        ctx.fill();
+      for (let i = 0; i < terrain.length; i += width < 640 ? 2 : 1) {
+        const p = terrain[i];
+        const screen = project(p.x, p.z, p.height);
+        const boundary = Math.min(1, (4.35 - Math.abs(p.x)) * 2, (2.8 - Math.abs(p.z)) * 2);
+        const alpha = (.22 + p.height * .14) * boundary * opacity(screen.x, screen.y);
+        ctx.fillStyle = `rgba(74,98,108,${alpha})`;
+        ctx.beginPath(); ctx.arc(screen.x, screen.y, p.size * (width < 640 ? .82 : 1), 0, TAU); ctx.fill();
+      }
+      for (const agent of current.agents) {
+        const fade = Math.max(0, Math.min(1, agent.age / 2, (agent.life - agent.age) / 3));
+        for (let i = 0; i < agent.trail.length; i += 2) {
+          const tail = agent.trail[i];
+          const p = project(tail.x, tail.z, reward(tail.x, tail.z));
+          ctx.fillStyle = `rgba(146,105,62,${.30 * (i / agent.trail.length) * fade * opacity(p.x, p.y)})`;
+          ctx.beginPath();ctx.arc(p.x, p.y, .85, 0, TAU);ctx.fill();
+        }
+        const p = project(agent.x, agent.z, reward(agent.x, agent.z));
+        const alpha = .85 * fade * opacity(p.x, p.y);
+        ctx.fillStyle = `rgba(145,97,48,${alpha})`;
+        ctx.beginPath();ctx.arc(p.x, p.y, width < 640 ? 1.75 : 2.1, 0, TAU);ctx.fill();
       }
       if (!still && !document.hidden) frame = requestAnimationFrame(draw);
     };
@@ -83,21 +145,17 @@ export default function Particles() {
       restart();
     };
     resize();
-    const sizing = new ResizeObserver(resize);
-    sizing.observe(canvas);
-    document.addEventListener('visibilitychange', restart);
-    reduced.addEventListener('change', restart);
+    const sizing = new ResizeObserver(resize);sizing.observe(canvas);
+    document.addEventListener('visibilitychange', restart);reduced.addEventListener('change', restart);
     return () => {
-      cancelAnimationFrame(frame);
-      sizing.disconnect();
-      document.removeEventListener('visibilitychange', restart);
-      reduced.removeEventListener('change', restart);
+      cancelAnimationFrame(frame);sizing.disconnect();
+      document.removeEventListener('visibilitychange', restart);reduced.removeEventListener('change', restart);
     };
   }, [paused]);
 
   return <>
     <canvas className="particle-background" ref={canvasRef} aria-hidden="true" />
-    <button className="motion-control" aria-label={paused ? 'Play background flow' : 'Pause background flow'} title={paused ? 'Play background flow' : 'Pause background flow'} onClick={() => setPaused(value => !value)} aria-pressed={paused}>
+    <button className="motion-control" aria-label={paused ? 'Play hill-climbing animation' : 'Pause hill-climbing animation'} title={paused ? 'Play hill-climbing animation' : 'Pause hill-climbing animation'} onClick={() => setPaused(value => !value)} aria-pressed={paused}>
       <span aria-hidden="true">{paused ? '▷' : 'Ⅱ'}</span>
     </button>
   </>;
