@@ -50,7 +50,9 @@ const streams = Array.from({ length: 190 }, () => {
   for (let step = 0; step < 100; step++) {
     path.push({ x, z, height: reward(x, z) });
     const slope = gradient(x, z);
-    const norm = Math.max(.45, Math.hypot(slope.x, slope.z));
+    const magnitude = Math.hypot(slope.x, slope.z);
+    if (step > 18 && magnitude < .16) break;
+    const norm = Math.max(.45, magnitude);
     x += slope.x / norm * .065 + Math.sin(step * .10 + phase) * .014;
     z += slope.z / norm * .065 + Math.cos(step * .08 + phase) * .014;
   }
@@ -90,7 +92,8 @@ export default function Particles() {
       const reading = Math.min(1, scroll / .8);
       const yaw = -.22 + Math.atan(scroll * .4) * .36 + Math.sin(time * .045) * .018;
       const sin = Math.sin(yaw), cos = Math.cos(yaw);
-      const vertical = Math.min(height * .19, width * .27);
+      const vertical = height * .22;
+      const depth = height * .255;
       const project = (x: number, z: number, elevation: number) => {
         // A long, slow wave carries both the surface and the uphill streams.
         const wave = Math.sin(x * .85 + z * .55 - time * .22 + scroll * .22);
@@ -98,7 +101,7 @@ export default function Particles() {
         const driftZ = z + wave * .17;
         return {
           x: width * .5 + (driftX * cos - driftZ * sin) * width * .15,
-          y: height * (.88 - reading * .08) + (driftZ * cos + driftX * sin) * vertical * .35
+          y: height * (.64 - reading * .025) + (driftZ * cos + driftX * sin) * depth
             - (elevation + wave * .12) * vertical,
         };
       };
