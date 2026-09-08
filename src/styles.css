@@ -31,5 +31,5 @@
 [data-reveal]:focus-visible,[data-reveal]:focus-within{opacity:1;transform:none}
 @media(max-width:640px){.hero{min-height:580px}.section-title{font-size:40px}.internship-row{min-height:110px}.education-section{margin-top:90px}.contact-section{padding-top:110px;padding-bottom:90px}}
 @media(prefers-reduced-motion:reduce){[data-reveal].reveal-pending{opacity:1;transform:none}.motion-control{display:none}}
-.world-background{mask-image:linear-gradient(115deg,transparent 12%,#0008 42%,#000 72%);-webkit-mask-image:linear-gradient(115deg,transparent 12%,#0008 42%,#000 72%)}
-@media(max-width:640px){.world-background{opacity:.75;mask-image:linear-gradient(150deg,transparent 10%,#0007 45%,#000 80%);-webkit-mask-image:linear-gradient(150deg,transparent 10%,#0007 45%,#000 80%)}}
+.world-background{mask-image:linear-gradient(115deg,#0005 0%,#000c 35%,#000 65%);-webkit-mask-image:linear-gradient(115deg,#0005 0%,#000c 35%,#000 65%)}
+@media(max-width:640px){.world-background{opacity:1;mask-image:linear-gradient(150deg,#0005 0%,#000c 40%,#000 70%);-webkit-mask-image:linear-gradient(150deg,#0005 0%,#000c 40%,#000 70%)}}

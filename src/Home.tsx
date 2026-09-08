@@ -41,7 +41,7 @@ export default function Home() {
     <Particles />
     <section className="hero">
       <h1>Charles Zuo</h1>
-      <p className="intro">Software engineer.<br />Infrastructure, data & machine learning.</p>
+      <p className="intro">Engineer, Problem Solver</p>
       <span className="scroll-note" aria-hidden="true"><span>↓</span></span>
     </section>
     <ExperienceSection />

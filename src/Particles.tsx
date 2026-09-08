@@ -35,8 +35,8 @@ export default function Particles() {
         scroll += (window.scrollY - scroll) * .045;
       }
       const angle = reduced.matches ? .55 : rotation.current + scroll / height * .16;
-      const radius = Math.min(width * .63, height * .59);
-      const cx = width * (width < 640 ? .69 : .76), cy = height * .69;
+      const radius = Math.min(width * .70, height * .66);
+      const cx = width * (width < 640 ? .63 : .72), cy = height * .69;
       const tilt = -.18;
       const sin = Math.sin(angle), cos = Math.cos(angle);
       const project = (x: number, y: number, z: number) => {
@@ -52,11 +52,11 @@ export default function Particles() {
       // A restrained atmospheric rim, without an opaque sphere behind the text.
       const atmosphere = ctx.createRadialGradient(cx, cy, radius * .8, cx, cy, radius * 1.08);
       atmosphere.addColorStop(0, 'rgba(102,130,127,0)');
-      atmosphere.addColorStop(.65, 'rgba(102,130,127,.035)');
+      atmosphere.addColorStop(.65, 'rgba(102,130,127,.07)');
       atmosphere.addColorStop(1, 'rgba(102,130,127,0)');
       ctx.fillStyle = atmosphere;
       ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = 'rgba(86,112,108,.12)';
+      ctx.strokeStyle = 'rgba(66,94,87,.32)';
       ctx.lineWidth = .75;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -75,7 +75,7 @@ export default function Particles() {
         }
         ctx.stroke();
       };
-      ctx.strokeStyle = 'rgba(86,112,108,.085)';
+      ctx.strokeStyle = 'rgba(66,94,87,.18)';
       ctx.lineWidth = .65;
       for (let latitude = -60; latitude <= 60; latitude += 30) trace(latitude, null);
       for (let longitude = 0; longitude < 360; longitude += 30) trace(null, longitude);
@@ -83,10 +83,10 @@ export default function Particles() {
       for (const point of continents) {
         const p = project(point.x, point.y, point.z);
         if (p.depth <= 0) continue;
-        const alpha = .10 + p.depth * .28;
+        const alpha = .30 + p.depth * .42;
         ctx.fillStyle = `rgba(66,94,87,${alpha})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, (width < 640 ? 1 : 1.35) * (.7 + p.depth * .3), 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, (width < 640 ? 1.5 : 2.1) * (.7 + p.depth * .3), 0, Math.PI * 2);
         ctx.fill();
       }
       if (!still && !document.hidden) frame = requestAnimationFrame(draw);
