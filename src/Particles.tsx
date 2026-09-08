@@ -4,10 +4,23 @@ import land from './world-land.json';
 const radians = Math.PI / 180;
 // Sampled from Natural Earth 1:110m land polygons (public domain).
 // All coordinates are bundled locally; no map service or network requests.
-const continents = land.map(([longitude, latitude]) => {
-  const lat = latitude * radians, lon = longitude * radians;
-  return { x: Math.cos(lat) * Math.sin(lon), y: Math.sin(lat), z: Math.cos(lat) * Math.cos(lon) };
-});
+let seed = 73;
+const random = () => { seed = seed * 16807 % 2147483647; return (seed - 1) / 2147483646; };
+const makePoint = (longitude: number, latitude: number, land: boolean) => {
+  const lat = (latitude + (random() - .5) * 1.6) * radians;
+  const lon = (longitude + (random() - .5) * 1.6) * radians;
+  return {
+    x: Math.cos(lat) * Math.sin(lon), y: Math.sin(lat), z: Math.cos(lat) * Math.cos(lon),
+    phase: random() * Math.PI * 2, speed: .35 + random() * .5,
+    size: .65 + random() * 1.1, spread: random(), land,
+  };
+};
+const points = [
+  ...land.map(([longitude, latitude]) => makePoint(longitude, latitude, true)),
+  // Sparse free particles suggest the oceans and soften the globe's edge.
+  ...Array.from({ length: 850 }, () => makePoint(random() * 360 - 180,
+    Math.asin(random() * 2 - 1) / radians, false)),
+];
 
 export default function Particles() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -49,44 +62,26 @@ export default function Particles() {
         };
       };
       ctx.clearRect(0, 0, width, height);
-      // A restrained atmospheric rim, without an opaque sphere behind the text.
-      const atmosphere = ctx.createRadialGradient(cx, cy, radius * .8, cx, cy, radius * 1.08);
-      atmosphere.addColorStop(0, 'rgba(102,130,127,0)');
-      atmosphere.addColorStop(.65, 'rgba(102,130,127,.07)');
-      atmosphere.addColorStop(1, 'rgba(102,130,127,0)');
-      ctx.fillStyle = atmosphere;
-      ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = 'rgba(66,94,87,.32)';
-      ctx.lineWidth = .75;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.stroke();
-
-      const trace = (latitude: number | null, longitude: number | null) => {
-        ctx.beginPath();
-        let drawing = false;
-        for (let i = 0; i <= 180; i++) {
-          const lat = latitude === null ? (-90 + i) * radians : latitude * radians;
-          const lon = longitude === null ? i * 2 * radians : longitude * radians;
-          const p = project(Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon));
-          if (p.depth < 0) { drawing = false; continue; }
-          if (drawing) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y);
-          drawing = true;
-        }
-        ctx.stroke();
-      };
-      ctx.strokeStyle = 'rgba(66,94,87,.18)';
-      ctx.lineWidth = .65;
-      for (let latitude = -60; latitude <= 60; latitude += 30) trace(latitude, null);
-      for (let longitude = 0; longitude < 360; longitude += 30) trace(null, longitude);
-
-      for (const point of continents) {
-        const p = project(point.x, point.y, point.z);
-        if (p.depth <= 0) continue;
-        const alpha = .30 + p.depth * .42;
+      const time = reduced.matches ? 0 : (rotation.current - .55) * 8;
+      for (const point of points) {
+        // Independent drifting phases keep the globe from moving like a rigid shell.
+        const drift = Math.sin(time * point.speed + point.phase);
+        const looseness = point.land ? .012 + point.spread ** 4 * .08 : .06 + point.spread * .18;
+        const shell = 1 + drift * looseness;
+        const p = project(
+          point.x * shell + Math.sin(time * .35 + point.phase) * looseness * .45,
+          point.y * shell + Math.cos(time * .28 + point.phase) * looseness * .45,
+          point.z * shell,
+        );
+        // A soft depth fade lets points emerge around the horizon without popping.
+        const front = Math.min(1, Math.max(0, (p.depth + .12) / .32));
+        const depth = Math.max(0, p.depth);
+        const alpha = (point.land ? .26 + depth * .38 : .10 + depth * .13)
+          * front * (.85 + drift * .15);
+        if (alpha < .005) continue;
         ctx.fillStyle = `rgba(66,94,87,${alpha})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, (width < 640 ? 1.5 : 2.1) * (.7 + p.depth * .3), 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, (width < 640 ? 1.3 : 1.8) * point.size * (.7 + depth * .3), 0, Math.PI * 2);
         ctx.fill();
       }
       if (!still && !document.hidden) frame = requestAnimationFrame(draw);
