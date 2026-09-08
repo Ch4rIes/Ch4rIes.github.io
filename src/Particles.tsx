@@ -39,10 +39,10 @@ while (terrain.length < 11500) {
   if (random() > footprint * (.20 + Math.min(.68, height * .39))) continue;
   const slope = gradient(x, z);
   terrain.push({ x, z, height, size: .40 + random() * .55,
-    intensity: .22 + Math.min(.25, height * .12) + Math.min(.13, Math.max(0, slope.x * .13 - slope.z * .10)) });
+    intensity: .28 + .20 * Math.max(0, (slope.x * .55 + .7 - slope.z * .35) / Math.hypot(slope.x, 1, slope.z)) });
 }
-// Continuous streams follow exploratory ascent paths. Their density increases as
-// progress slows near a summit, and their ends fade before the next exploration.
+// Continuous streams follow exploratory ascent paths with even travel spacing
+// and soft endpoints, preserving motion without collecting dots at summits.
 const streams = Array.from({ length: 190 }, () => {
   let x = (random() - .5) * 7.8, z = (random() - .5) * 4.8;
   const phase = random() * TAU;
@@ -51,12 +51,24 @@ const streams = Array.from({ length: 190 }, () => {
     path.push({ x, z, height: reward(x, z) });
     const slope = gradient(x, z);
     const magnitude = Math.hypot(slope.x, slope.z);
-    if (step > 18 && magnitude < .16) break;
+    if (step > 8 && magnitude < .32) break;
     const norm = Math.max(.45, magnitude);
     x += slope.x / norm * .065 + Math.sin(step * .10 + phase) * .014;
     z += slope.z / norm * .065 + Math.cos(step * .08 + phase) * .014;
   }
-  return { path, phase, speed: .025 + random() * .018 };
+  // Equal travel distances prevent a pile-up where ascent slows near a summit.
+  const lengths = [0];
+  for (let i = 1; i < path.length; i++) lengths.push(lengths[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z));
+  let segment = 1;
+  const evenPath = Array.from({ length: 80 }, (_, i) => {
+    const distance = lengths[lengths.length - 1] * i / 79;
+    while (segment < lengths.length - 1 && lengths[segment] < distance) segment++;
+    const a = path[segment - 1], b = path[segment];
+    const blend = (distance - lengths[segment - 1]) / Math.max(1e-6, lengths[segment] - lengths[segment - 1]);
+    const x = a.x + (b.x - a.x) * blend, z = a.z + (b.z - a.z) * blend;
+    return { x, z, height: reward(x, z) };
+  });
+  return { path: evenPath, phase, speed: .025 + random() * .018 };
 });
 
 export default function Particles() {
@@ -92,16 +104,18 @@ export default function Particles() {
       const reading = Math.min(1, scroll / .8);
       const yaw = -.22 + Math.atan(scroll * .4) * .36 + Math.sin(time * .045) * .018;
       const sin = Math.sin(yaw), cos = Math.cos(yaw);
-      const vertical = height * .22;
-      const depth = height * .255;
+      const vertical = height * (width < 640 ? .31 : .38);
+      const horizontal = width * (width < 640 ? .27 : .15);
+      const depth = height * .13;
       const project = (x: number, z: number, elevation: number) => {
         // A long, slow wave carries both the surface and the uphill streams.
         const wave = Math.sin(x * .85 + z * .55 - time * .22 + scroll * .22);
         const driftX = x + .13 * Math.sin(z * .9 + time * .12 + scroll * .13);
         const driftZ = z + wave * .17;
         return {
-          x: width * .5 + (driftX * cos - driftZ * sin) * width * .15,
-          y: height * (.64 - reading * .025) + (driftZ * cos + driftX * sin) * depth
+          x: width * .5 + (driftX * cos - driftZ * sin) * horizontal,
+          depth: driftZ * cos + driftX * sin,
+          y: height * (.78 - reading * .025) + (driftZ * cos + driftX * sin) * depth
             - (elevation + wave * .12) * vertical,
         };
       };
@@ -112,7 +126,11 @@ export default function Particles() {
       };
       ctx.clearRect(0, 0, width, height);
       for (const batch of batches) batch.length = 0;
-      const add = (x: number, y: number, radius: number, alpha: number) => {
+      const points: Array<{ x: number; y: number; depth: number; radius: number; alpha: number }> = [];
+      const add = (x: number, y: number, radius: number, alpha: number, depth: number) => {
+        points.push({ x, y, radius, alpha, depth });
+      };
+      const paint = (x: number, y: number, radius: number, alpha: number) => {
         if (x < -3 || x > width + 3 || y < -3 || y > height + 3) return;
         const shade = Math.min(13, Math.floor(alpha * 20));
         if (shade > 0) batches[shade].push(x, y, radius);
@@ -120,7 +138,7 @@ export default function Particles() {
       for (let i = 0; i < terrain.length; i += width < 640 ? 2 : 1) {
         const p = terrain[i];
         const screen = project(p.x, p.z, p.height);
-        add(screen.x, screen.y, p.size * (width < 640 ? .76 : 1), p.intensity * opacity(screen.x, screen.y));
+        add(screen.x, screen.y, p.size * (width < 640 ? .76 : 1), p.intensity * opacity(screen.x, screen.y), screen.depth);
       }
       for (let streamIndex = 0; streamIndex < streams.length; streamIndex += width < 640 ? 2 : 1) {
         const stream = streams[streamIndex];
@@ -130,10 +148,20 @@ export default function Particles() {
           const index = Math.floor(position), blend = position - index;
           const a = stream.path[index], b = stream.path[Math.min(index + 1, stream.path.length - 1)];
           const p = project(a.x + (b.x - a.x) * blend, a.z + (b.z - a.z) * blend, a.height + (b.height - a.height) * blend);
-          const fade = Math.min(1, u * 8, (1 - u) * 7);
-          const intensity = (.38 + .20 * Math.sin(u * Math.PI)) * fade * opacity(p.x, p.y);
-          add(p.x, p.y, width < 640 ? .75 : 1.03, intensity);
+          const fade = Math.pow(Math.sin(u * Math.PI), 1.4);
+          const intensity = (.20 + .12 * Math.sin(u * Math.PI)) * fade * opacity(p.x, p.y);
+          add(p.x, p.y, width < 640 ? .62 : .85, intensity, p.depth);
         }
+      }
+      // Front slopes hide rear slopes, preserving a readable hill silhouette.
+      points.sort((a, b) => b.depth - a.depth);
+      const horizon = new Float32Array(Math.ceil(width / 2) + 1).fill(height + 10);
+      for (const point of points) {
+        if (point.x < 0 || point.x >= width) continue;
+        const column = Math.floor(point.x / 2);
+        if (point.y > horizon[column] + 3) continue;
+        horizon[column] = Math.min(horizon[column], point.y);
+        paint(point.x, point.y, point.radius, point.alpha);
       }
       // One neutral ink, with batched shades keeping the denser field inexpensive.
       for (let shade = 1; shade < batches.length; shade++) {
