@@ -40,8 +40,8 @@ export default function Home() {
   return <main ref={main} id="main" className="home">
     <Particles />
     <section className="hero">
-      <h1>Charles Zuo</h1>
-      <p className="intro">Engineer, Problem Solver</p>
+      <div className="hero-copy"><h1>Charles Zuo</h1>
+      <p className="intro">Engineer, Problem Solver</p></div>
       <span className="scroll-note" aria-hidden="true"><span>↓</span></span>
     </section>
     <ExperienceSection />
