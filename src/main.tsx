@@ -9,7 +9,6 @@ createRoot(document.getElementById('root')!).render(
     <Home />
     <footer>
       <span>Charles Zuo · He/Him</span>
-      <a href="https://www.linkedin.com/in/qzuo/" target="_blank" rel="noreferrer">LinkedIn ↗</a>
       <span>© {new Date().getFullYear()}</span>
     </footer>
   </StrictMode>,

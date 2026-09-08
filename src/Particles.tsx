@@ -146,8 +146,8 @@ export default function Particles() {
 
   return <>
     <canvas className="particles" ref={canvasRef} aria-hidden="true" />
-    <button className="motion-control" onClick={() => setPaused(value => !value)} aria-pressed={paused}>
-      {paused ? 'Play motion' : 'Pause motion'} <span aria-hidden="true">{paused ? '▷' : 'Ⅱ'}</span>
+    <button className="motion-control" aria-label={paused ? 'Play background animation' : 'Pause background animation'} title={paused ? 'Play background animation' : 'Pause background animation'} onClick={() => setPaused(value => !value)} aria-pressed={paused}>
+      <span aria-hidden="true">{paused ? '▷' : 'Ⅱ'}</span>
     </button>
   </>;
 }
