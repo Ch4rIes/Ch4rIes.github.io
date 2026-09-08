@@ -14,6 +14,6 @@ export default function ExperienceSection() {
       <h3 className="employer-logo">{item.logo === 'hrt' || item.logo === 'stripe' ? <ReferenceWordmark brand={item.logo} /> : <img className={`employer-mark mark-${item.logo}`} src={`/logos/${item.logo}.svg`} alt={item.company} />}</h3>
       <p className="internship-team">{item.team}</p><p className="internship-period">{item.period}</p>
     </article>)}</div>
-    <section id="education" className="education education-section"><h2 data-reveal className="section-title">Education</h2><div data-reveal className="education-summary"><div className="education-content"><p className="card-overline">UNIVERSITY OF BRITISH COLUMBIA</p><h3>Computer Science</h3><p>Bachelor of Science</p><div className="education-meta"><span>Graduated June 2026</span><span>Vancouver, BC</span></div></div></div></section>
+    <section id="education" className="education education-section"><h2 data-reveal className="section-title">Education</h2><div data-reveal className="education-summary"><ReferenceWordmark brand="ubc" /><div className="education-content"><h3>Computer Science</h3><p>Bachelor of Science</p><div className="education-meta"><span>Graduated June 2026</span><span>Vancouver, BC</span></div></div></div></section>
   </section>;
 }
