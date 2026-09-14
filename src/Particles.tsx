@@ -1,208 +1,272 @@
 import { useEffect, useRef, useState } from 'react';
 
-const TAU = Math.PI * 2;
-const hills = [
-  { x: -1.7, z: .35, height: 1.2, spread: 1.1 },
-  { x: 1.2, z: -.65, height: 1.65, spread: .95 },
-  { x: 2.65, z: 1.5, height: .9, spread: .85 },
-];
-// An artistic reward surface; agents use noisy gradient ascent, not a trained RL policy.
-function reward(x: number, z: number) {
-  let value = .07 * Math.sin(x * 1.4) * Math.cos(z);
-  for (const hill of hills) value += hill.height * Math.exp(-((x - hill.x) ** 2 + (z - hill.z) ** 2) / (2 * hill.spread ** 2));
-  return value;
+const MAX_PARTICLES = 180000;
+const vertex = `
+precision highp float;
+attribute vec4 a_seed;
+attribute vec2 a_style;
+uniform vec2 u_resolution;
+uniform float u_dpr, u_time, u_scroll, u_impulse, u_velocity;
+varying mediump vec2 v_direction;
+varying mediump float v_length, v_box, v_alpha;
+
+vec2 flow(float life, float time) {
+  // One broad inward current. The small offset keeps the center finite and continuous.
+  float r = .003 + 1.45 * (sqrt(.035 + life) - sqrt(.035)) / (sqrt(1.035) - sqrt(.035));
+  float angle = a_seed.x + 1.85 * log(.12 + r) - time * .025 - u_impulse * .24;
+  r *= 1.0 + .10 * sin(2.0 * angle);
+  return vec2(r * cos(angle) + .15 * r * r,
+    r * sin(angle) + .09 * r * r * cos(angle));
 }
-function gradient(x: number, z: number) {
-  let dx = .098 * Math.cos(x * 1.4) * Math.cos(z);
-  let dz = -.07 * Math.sin(x * 1.4) * Math.sin(z);
-  for (const hill of hills) {
-    const variance = hill.spread ** 2;
-    const value = hill.height * Math.exp(-((x - hill.x) ** 2 + (z - hill.z) ** 2) / (2 * variance));
-    dx -= value * (x - hill.x) / variance;
-    dz -= value * (z - hill.z) / variance;
-  }
-  return { x: dx, z: dz };
-}
-function randomSource(initial: number) {
-  let seed = initial;
-  return () => { seed = seed * 16807 % 2147483647; return (seed - 1) / 2147483646; };
-}
-const random = randomSource(193);
-type SurfacePoint = { x: number; z: number; height: number };
-const terrain: Array<SurfacePoint & { size: number; intensity: number }> = [];
-// Importance sampling makes slopes read through density, without a visible grid.
-while (terrain.length < 11500) {
-  const x = (random() - .5) * 9.2;
-  const z = (random() - .5) * 5.6;
-  const height = reward(x, z);
-  const footprint = Math.exp(-Math.pow(x / 4.2, 8) - Math.pow((z + .15 * Math.sin(x)) / 2.25, 6));
-  if (random() > footprint * (.20 + Math.min(.68, height * .39))) continue;
-  const slope = gradient(x, z);
-  terrain.push({ x, z, height, size: .40 + random() * .55,
-    intensity: .28 + .20 * Math.max(0, (slope.x * .55 + .7 - slope.z * .35) / Math.hypot(slope.x, 1, slope.z)) });
-}
-// Continuous streams follow exploratory ascent paths with even travel spacing
-// and soft endpoints, preserving motion without collecting dots at summits.
-const streams = Array.from({ length: 190 }, () => {
-  let x = (random() - .5) * 7.8, z = (random() - .5) * 4.8;
-  const phase = random() * TAU;
-  const path: SurfacePoint[] = [];
-  for (let step = 0; step < 100; step++) {
-    path.push({ x, z, height: reward(x, z) });
-    const slope = gradient(x, z);
-    const magnitude = Math.hypot(slope.x, slope.z);
-    if (step > 8 && magnitude < .32) break;
-    const norm = Math.max(.45, magnitude);
-    x += slope.x / norm * .065 + Math.sin(step * .10 + phase) * .014;
-    z += slope.z / norm * .065 + Math.cos(step * .08 + phase) * .014;
-  }
-  // Equal travel distances prevent a pile-up where ascent slows near a summit.
-  const lengths = [0];
-  for (let i = 1; i < path.length; i++) lengths.push(lengths[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z));
-  let segment = 1;
-  const evenPath = Array.from({ length: 80 }, (_, i) => {
-    const distance = lengths[lengths.length - 1] * i / 79;
-    while (segment < lengths.length - 1 && lengths[segment] < distance) segment++;
-    const a = path[segment - 1], b = path[segment];
-    const blend = (distance - lengths[segment - 1]) / Math.max(1e-6, lengths[segment] - lengths[segment - 1]);
-    const x = a.x + (b.x - a.x) * blend, z = a.z + (b.z - a.z) * blend;
-    return { x, z, height: reward(x, z) };
+void main() {
+  float compact = 1.0 - step(640.0, u_resolution.x);
+  vec2 center = u_resolution * vec2(.56 + sin(u_scroll * .3) * .035, .59 - sin(u_scroll * .25) * .035);
+  vec2 scale = u_resolution * vec2(mix(.63, .92, compact), .68);
+  float turn = -.18 + sin(u_time * .022) * .04 + atan(u_scroll * .3) * .12;
+  float ct = cos(turn), st = sin(turn);
+  float life = fract(a_seed.y - u_time * .022 - u_impulse * .035);
+  vec2 p = flow(life, u_time);
+  // Unwrapped finite differences include both radial and angular velocity.
+  vec2 tangent = flow(life - .022 * .035, u_time + .035) - p;
+  vec2 screen = center + vec2(p.x * ct - p.y * st, p.y * ct + p.x * st) * scale;
+  tangent = vec2(tangent.x * ct - tangent.y * st, tangent.y * ct + tangent.x * st) * scale;
+  v_direction = normalize(tangent);
+  float radius = length(p);
+  // Long outer filaments resolve into fine points as they reach the source.
+  float trail = smoothstep(.045, 1.05, radius);
+  v_length = min(25.0, (.06 + 10.0 * trail) * (.65 + a_style.x * .22) * (1.0 + abs(u_velocity) * .30));
+  v_box = v_length + 3.0;
+  float r = length(p);
+  float angle = atan(p.y, p.x);
+  float nearSide = pow(.5 + .5 * cos(angle - 2.3), 3.0);
+  float illuminatedFold = exp(-pow(abs((r - .40) / .25), 2.0)) * nearSide;
+  float centerLight = exp(-r * r / .06);
+  float fade = 1.0 - smoothstep(.93, 1.0, life);
+  vec2 uv = screen / u_resolution;
+  float title = exp(-pow(abs((uv.x - .5) / .30), 4.0) - pow(abs((uv.y - .43) / .10), 4.0));
+  float text = exp(-pow(abs((uv.x - .5) / .40), 8.0));
+  float reading = min(1.0, u_scroll / .8);
+  v_alpha = a_style.y * (.29 + .43 * illuminatedFold + .38 * centerLight) * fade
+    * (1.0 - .34 * title * (1.0 - reading) - .38 * text * reading);
+  gl_Position = vec4(screen.x / u_resolution.x * 2.0 - 1.0, 1.0 - screen.y / u_resolution.y * 2.0, 0.0, 1.0);
+  gl_PointSize = v_box * u_dpr;
+}`;
+const fragment = `
+precision mediump float;
+varying mediump vec2 v_direction;
+varying mediump float v_length, v_box, v_alpha;
+void main() {
+  vec2 p = (gl_PointCoord - .5) * v_box;
+  float along = dot(p, v_direction);
+  float across = dot(p, vec2(-v_direction.y, v_direction.x));
+  float end = max(abs(along) - v_length * .36, 0.0);
+  float distance2 = end * end + across * across;
+  // Subpixel filaments with soft ends and a very small halo, all in one champagne-gold ink.
+  float core = exp(-distance2 / .15);
+  float halo = exp(-distance2 / 1.4) * .07;
+  float alpha = v_alpha * (core + halo);
+  if (alpha < .004) discard;
+  gl_FragColor = vec4(.98, .81, .53, alpha);
+}`;
+const lightVertex = `
+attribute vec2 a_position;
+varying mediump vec2 v_uv;
+void main() { v_uv = vec2(a_position.x * .5 + .5, .5 - a_position.y * .5); gl_Position = vec4(a_position, 0.0, 1.0); }
+`;
+const lightFragment = `
+precision mediump float;
+varying mediump vec2 v_uv;
+uniform vec2 u_resolution;
+uniform float u_time, u_scroll, u_velocity;
+void main() {
+  float compact = 1.0 - step(640.0, u_resolution.x);
+  vec2 center = vec2(.56 + sin(u_scroll * .3) * .035, .59 - sin(u_scroll * .25) * .035);
+  vec2 p = (v_uv - center) / vec2(mix(.63, .92, compact), .68);
+  float turn = -.18 + sin(u_time * .022) * .04 + atan(u_scroll * .3) * .12;
+  p = vec2(p.x * cos(turn) + p.y * sin(turn), p.y * cos(turn) - p.x * sin(turn));
+  float r = length(p);
+  p -= vec2(.15 * r * r, .09 * r * p.x);
+  float angle = atan(p.y, p.x);
+  r = length(p) / (1.0 + .10 * sin(angle * 2.0));
+  float nearSide = pow(.5 + .5 * cos(angle - 2.3), 3.0);
+  float source = exp(-r * r / .036);
+  float radiance = exp(-r * r / .16);
+  float fold = exp(-pow(abs((r - .25) / .18), 2.0)) * nearSide;
+  float reading = min(1.0, u_scroll / .8);
+  float power = 1.0 + abs(u_velocity) * .04;
+  float glow = (.26 * source + .07 * radiance + .14 * fold) * power * (1.0 - .28 * reading);
+  vec3 gold = mix(vec3(.98, .81, .53), vec3(.98, .88, .70), source);
+  gl_FragColor = vec4(gold, glow);
+}`;
+
+function createProgram(gl: WebGLRenderingContext, vertexSource: string, fragmentSource: string) {
+  const shaders = [gl.VERTEX_SHADER, gl.FRAGMENT_SHADER].map((type, index) => {
+    const shader = gl.createShader(type);
+    if (!shader) throw new Error('Could not create particle shader');
+    gl.shaderSource(shader, index === 0 ? vertexSource : fragmentSource);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const message = gl.getShaderInfoLog(shader);
+      gl.deleteShader(shader);
+      throw new Error(message || 'Could not compile particle shader');
+    }
+    return shader;
   });
-  return { path: evenPath, phase, speed: .025 + random() * .018 };
-});
+  const program = gl.createProgram();
+  if (!program) throw new Error('Could not create particle program');
+  shaders.forEach(shader => gl.attachShader(program, shader));
+  gl.linkProgram(program);
+  shaders.forEach(shader => gl.deleteShader(shader));
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const message = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(message || 'Could not link particle program');
+  }
+  return program;
+}
+
+function createSeeds() {
+  let seed = 193;
+  const random = () => { seed = seed * 16807 % 2147483647; return (seed - 1) / 2147483646; };
+  const data = new Float32Array(MAX_PARTICLES * 6);
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    const offset = i * 6;
+    data[offset] = random() * Math.PI * 2;
+    data[offset + 1] = random();
+    data[offset + 2] = random();
+    data[offset + 3] = random();
+    data[offset + 4] = 1.7 + random() * 2.0;
+    data[offset + 5] = .48 + random() * .52;
+  }
+  return data;
+}
+const seeds = createSeeds();
 
 export default function Particles() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const scene = useRef({ time: 0, scroll: 0, velocity: 0 });
+  const scene = useRef({ time: 0, scroll: 0, velocity: 0, impulse: 0 });
   const [paused, setPaused] = useState(false);
+  const [available, setAvailable] = useState(true);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
+    if (!canvas) return;
+    const gl = canvas.getContext('webgl', { alpha: true, antialias: false, depth: false, stencil: false });
+    if (!gl) { setAvailable(false); return; }
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-    let width = innerWidth, height = innerHeight, frame = 0, last = 0;
+    let width = innerWidth, height = innerHeight, dpr = 1, count = 0, frame = 0, last = 0;
     let previousScroll = window.scrollY;
+    let disposed = false;
     const current = scene.current;
-    const batches: number[][] = Array.from({ length: 14 }, () => []);
+    type Pipeline = { program: WebGLProgram; buffer: WebGLBuffer; seed: number; style: number;
+      resolution: WebGLUniformLocation | null; time: WebGLUniformLocation | null;
+      scroll: WebGLUniformLocation | null; dpr: WebGLUniformLocation | null;
+      impulse: WebGLUniformLocation | null; velocity: WebGLUniformLocation | null };
+    let field: Pipeline | undefined, light: Pipeline | undefined;
+    const setup = (isLight: boolean): Pipeline => {
+      const program = createProgram(gl, isLight ? lightVertex : vertex, isLight ? lightFragment : fragment);
+      const buffer = gl.createBuffer();
+      if (!buffer) { gl.deleteProgram(program); throw new Error('Could not create particle buffer'); }
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, isLight ? new Float32Array([-1, -1, 3, -1, -1, 3]) : seeds, gl.STATIC_DRAW);
+      return { program, buffer, seed: gl.getAttribLocation(program, isLight ? 'a_position' : 'a_seed'),
+        style: isLight ? -1 : gl.getAttribLocation(program, 'a_style'),
+        resolution: gl.getUniformLocation(program, 'u_resolution'), time: gl.getUniformLocation(program, 'u_time'),
+        scroll: gl.getUniformLocation(program, 'u_scroll'), dpr: gl.getUniformLocation(program, 'u_dpr'),
+        impulse: gl.getUniformLocation(program, 'u_impulse'), velocity: gl.getUniformLocation(program, 'u_velocity') };
+    };
+    const release = () => {
+      for (const pipeline of [field, light]) {
+        if (pipeline) { gl.deleteBuffer(pipeline.buffer); gl.deleteProgram(pipeline.program); }
+      }
+      field = light = undefined;
+    };
+    const initialize = () => {
+      try {
+        field = setup(false); light = setup(true);
+        gl.enable(gl.BLEND);
+        gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.clearColor(0, 0, 0, 0);
+        setAvailable(true);
+      } catch {
+        release();
+        setAvailable(false);
+      }
+    };
     const draw = (now: number) => {
+      if (disposed || !field || !light || gl.isContextLost()) return;
       const still = paused || reduced.matches;
-      if (!still && now - last < 25) { frame = requestAnimationFrame(draw); return; }
-      const dt = Math.min((now - last) / 1000, .05);
+      const dt = Math.min(Math.max((now - last) / 1000, 0), .05);
       last = now;
       if (!still) {
         const target = Math.max(0, window.scrollY);
         const velocity = Math.max(-2, Math.min(2, (target - previousScroll) / Math.max(height * dt, 1)));
-        current.velocity += (velocity - current.velocity) * (1 - Math.exp(-dt * 5));
-        current.scroll += (target / height - current.scroll) * (1 - Math.exp(-dt * 6));
-        current.time += dt * (1 + Math.abs(current.velocity) * .2);
+        current.velocity += (velocity - current.velocity) * (1 - Math.exp(-dt * 4));
+        current.scroll += (target / height - current.scroll) * (1 - Math.exp(-dt * 4));
+        current.impulse += Math.abs(current.velocity) * dt * .055;
+        current.time += dt * .30 * (1 + Math.abs(current.velocity) * .60);
         previousScroll = target;
-
       }
-      const scroll = reduced.matches ? 0 : current.scroll;
-      const time = reduced.matches ? 0 : current.time;
-      const reading = Math.min(1, scroll / .8);
-      const yaw = -.22 + Math.atan(scroll * .4) * .36 + Math.sin(time * .045) * .018;
-      const sin = Math.sin(yaw), cos = Math.cos(yaw);
-      const vertical = height * (width < 640 ? .31 : .38);
-      const horizontal = width * (width < 640 ? .27 : .15);
-      const depth = height * .13;
-      const project = (x: number, z: number, elevation: number) => {
-        // A long, slow wave carries both the surface and the uphill streams.
-        const wave = Math.sin(x * .85 + z * .55 - time * .22 + scroll * .22);
-        const driftX = x + .13 * Math.sin(z * .9 + time * .12 + scroll * .13);
-        const driftZ = z + wave * .17;
-        return {
-          x: width * .5 + (driftX * cos - driftZ * sin) * horizontal,
-          depth: driftZ * cos + driftX * sin,
-          y: height * (.78 - reading * .025) + (driftZ * cos + driftX * sin) * depth
-            - (elevation + wave * .12) * vertical,
-        };
-      };
-      const opacity = (x: number, y: number) => {
-        const title = Math.exp(-Math.pow((x / width - .5) / .34, 4) - Math.pow((y / height - .43) / .18, 4));
-        const text = Math.exp(-Math.pow((x / width - .5) / .41, 8));
-        return 1 - .70 * title * (1 - reading) - .52 * text * reading;
-      };
-      ctx.clearRect(0, 0, width, height);
-      for (const batch of batches) batch.length = 0;
-      const points: Array<{ x: number; y: number; depth: number; radius: number; alpha: number }> = [];
-      const add = (x: number, y: number, radius: number, alpha: number, depth: number) => {
-        points.push({ x, y, radius, alpha, depth });
-      };
-      const paint = (x: number, y: number, radius: number, alpha: number) => {
-        if (x < -3 || x > width + 3 || y < -3 || y > height + 3) return;
-        const shade = Math.min(13, Math.floor(alpha * 20));
-        if (shade > 0) batches[shade].push(x, y, radius);
-      };
-      for (let i = 0; i < terrain.length; i += width < 640 ? 2 : 1) {
-        const p = terrain[i];
-        const screen = project(p.x, p.z, p.height);
-        add(screen.x, screen.y, p.size * (width < 640 ? .76 : 1), p.intensity * opacity(screen.x, screen.y), screen.depth);
-      }
-      for (let streamIndex = 0; streamIndex < streams.length; streamIndex += width < 640 ? 2 : 1) {
-        const stream = streams[streamIndex];
-        for (let dot = 0; dot < 17; dot++) {
-          const u = (dot / 17 + stream.phase / TAU + time * stream.speed + scroll * .022) % 1;
-          const position = u * (stream.path.length - 1);
-          const index = Math.floor(position), blend = position - index;
-          const a = stream.path[index], b = stream.path[Math.min(index + 1, stream.path.length - 1)];
-          const p = project(a.x + (b.x - a.x) * blend, a.z + (b.z - a.z) * blend, a.height + (b.height - a.height) * blend);
-          const fade = Math.pow(Math.sin(u * Math.PI), 1.4);
-          const intensity = (.20 + .12 * Math.sin(u * Math.PI)) * fade * opacity(p.x, p.y);
-          add(p.x, p.y, width < 640 ? .62 : .85, intensity, p.depth);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      for (const pipeline of [light, field]) {
+        const isLight = pipeline === light;
+        gl.useProgram(pipeline.program);
+        gl.bindBuffer(gl.ARRAY_BUFFER, pipeline.buffer);
+        gl.enableVertexAttribArray(pipeline.seed);
+        gl.vertexAttribPointer(pipeline.seed, isLight ? 2 : 4, gl.FLOAT, false, isLight ? 0 : 24, 0);
+        if (!isLight) {
+          gl.enableVertexAttribArray(pipeline.style);
+          gl.vertexAttribPointer(pipeline.style, 2, gl.FLOAT, false, 24, 16);
         }
-      }
-      // Front slopes hide rear slopes, preserving a readable hill silhouette.
-      points.sort((a, b) => b.depth - a.depth);
-      const horizon = new Float32Array(Math.ceil(width / 2) + 1).fill(height + 10);
-      for (const point of points) {
-        if (point.x < 0 || point.x >= width) continue;
-        const column = Math.floor(point.x / 2);
-        if (point.y > horizon[column] + 3) continue;
-        horizon[column] = Math.min(horizon[column], point.y);
-        paint(point.x, point.y, point.radius, point.alpha);
-      }
-      // One neutral ink, with batched shades keeping the denser field inexpensive.
-      for (let shade = 1; shade < batches.length; shade++) {
-        const batch = batches[shade];
-        ctx.fillStyle = `rgba(42,42,42,${shade / 20})`;
-        ctx.beginPath();
-        for (let i = 0; i < batch.length; i += 3) {
-          ctx.moveTo(batch[i] + batch[i + 2], batch[i + 1]);
-          ctx.arc(batch[i], batch[i + 1], batch[i + 2], 0, TAU);
-        }
-        ctx.fill();
+        gl.uniform2f(pipeline.resolution, width, height);
+        gl.uniform1f(pipeline.time, reduced.matches ? 0 : current.time);
+        gl.uniform1f(pipeline.scroll, reduced.matches ? 0 : current.scroll);
+        gl.uniform1f(pipeline.dpr, dpr);
+        gl.uniform1f(pipeline.impulse, reduced.matches ? 0 : current.impulse);
+        gl.uniform1f(pipeline.velocity, reduced.matches ? 0 : current.velocity);
+        gl.drawArrays(isLight ? gl.TRIANGLES : gl.POINTS, 0, isLight ? 3 : count);
+        gl.disableVertexAttribArray(pipeline.seed);
+        if (!isLight) gl.disableVertexAttribArray(pipeline.style);
       }
       if (!still && !document.hidden) frame = requestAnimationFrame(draw);
     };
     const restart = () => {
       cancelAnimationFrame(frame);
       previousScroll = window.scrollY;
-      last = performance.now() - 26;
-      if (!document.hidden) draw(performance.now());
+      last = performance.now();
+      if (!document.hidden) draw(last);
     };
     const resize = () => {
       const bounds = canvas.getBoundingClientRect();
-      width = bounds.width; height = Math.max(1, bounds.height);
-      const dpr = Math.min(devicePixelRatio || 1, 1.75);
-      canvas.width = width * dpr; canvas.height = height * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      width = Math.max(1, bounds.width); height = Math.max(1, bounds.height);
+      dpr = Math.min(devicePixelRatio || 1, width < 640 ? 2 : 1.6);
+      count = Math.min(MAX_PARTICLES, Math.max(36000, Math.round(width * height * .16)));
+      canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+      gl.viewport(0, 0, canvas.width, canvas.height);
       restart();
     };
-    resize();
-    const sizing = new ResizeObserver(resize);sizing.observe(canvas);
-    document.addEventListener('visibilitychange', restart);reduced.addEventListener('change', restart);
+    const lost = (event: Event) => { event.preventDefault(); cancelAnimationFrame(frame); setAvailable(false); };
+    const restored = () => { initialize(); resize(); };
+    initialize(); resize();
+    const sizing = new ResizeObserver(resize); sizing.observe(canvas);
+    canvas.addEventListener('webglcontextlost', lost);
+    canvas.addEventListener('webglcontextrestored', restored);
+    document.addEventListener('visibilitychange', restart);
+    reduced.addEventListener('change', restart);
     return () => {
-      cancelAnimationFrame(frame);sizing.disconnect();
-      document.removeEventListener('visibilitychange', restart);reduced.removeEventListener('change', restart);
+      disposed = true;
+      cancelAnimationFrame(frame); sizing.disconnect(); release();
+      canvas.removeEventListener('webglcontextlost', lost);
+      canvas.removeEventListener('webglcontextrestored', restored);
+      document.removeEventListener('visibilitychange', restart);
+      reduced.removeEventListener('change', restart);
     };
   }, [paused]);
 
   return <>
     <canvas className="particle-background" ref={canvasRef} aria-hidden="true" />
-    <button className="motion-control" aria-label={paused ? 'Play hill-climbing animation' : 'Pause hill-climbing animation'} title={paused ? 'Play hill-climbing animation' : 'Pause hill-climbing animation'} onClick={() => setPaused(value => !value)} aria-pressed={paused}>
+    {available && <button className="motion-control" aria-label={paused ? 'Play particle animation' : 'Pause particle animation'} title={paused ? 'Play particle animation' : 'Pause particle animation'} onClick={() => setPaused(value => !value)} aria-pressed={paused}>
       <span aria-hidden="true">{paused ? '▷' : 'Ⅱ'}</span>
-    </button>
+    </button>}
   </>;
 }
