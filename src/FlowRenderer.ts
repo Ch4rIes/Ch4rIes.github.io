@@ -1,7 +1,5 @@
 import { FLOW_SURFACE_GLSL, createFlowArcMap } from './FlowGeometry';
 
-const LIGHT_AIM = [-.62, -.52, .59] as const;
-
 const MAX_PARTICLES = 300000;
 const particleVertex = `
 precision highp float;
@@ -9,8 +7,8 @@ attribute vec4 a_seed;
 attribute vec2 a_style;
 uniform vec2 u_resolution;
 uniform float u_scroll, u_time, u_dpr, u_maxArc;
+uniform mediump float u_glowPass;
 uniform float u_arcMap[64];
-uniform vec3 u_lightAim;
 varying mediump vec2 v_direction;
 varying mediump float v_length, v_box, v_width, v_alpha, v_light;
 ${FLOW_SURFACE_GLSL}
@@ -28,7 +26,8 @@ float worldScale() {
 vec2 screenPosition(vec3 p) {
   vec3 c = camera(p);
   vec2 offset = c.xy * (14.0 / (14.0 - c.z)) * worldScale();
-  return vec2(.53, .75) * u_resolution + offset * vec2(1.0, -1.0);
+  float compact = 1.0 - smoothstep(540.0, 760.0, u_resolution.x);
+  return vec2(mix(.45, .65, compact), .79) * u_resolution + offset * vec2(1.0, -1.0);
 }
 void particle(float life, out vec3 p, out vec3 normal) {
   float coordinate = clamp(life, 0.0, 1.0) * 63.0;
@@ -40,47 +39,68 @@ void particle(float life, out vec3 p, out vec3 normal) {
   flowSurface(u, theta, p, normal);
   // A thin, continuous volume softens the implied fold. The individual points
   // remain sharp; no opaque mesh or artificially blurred material is drawn.
-  float thickness = .018 + .055 * smoothstep(.02, 1.5, arc);
+  float thickness = .007 + .017 * smoothstep(.02, 1.5, arc);
   p += normal * a_seed.z * thickness;
 }
 void main() {
   float life = fract(a_seed.y - u_time * .010);
   vec3 p, normal, tail, tailNormal;
   particle(life, p, normal);
-  particle(life + .0005, tail, tailNormal);
   vec2 screen = screenPosition(p);
-  vec2 tangent = screen - screenPosition(tail);
-  v_direction = tangent / max(length(tangent), .0001);
+  v_direction = vec2(1.0, 0.0);
+  if (u_glowPass < .5) {
+    particle(life + .0005, tail, tailNormal);
+    vec2 tangent = screen - screenPosition(tail);
+    v_direction = tangent / max(length(tangent), .0001);
+  }
   float arc = life * u_maxArc;
-  v_length = .15 + 5.5 * smoothstep(.12, 2.2, arc) * a_style.x;
+  v_length = .15 + 3.8 * smoothstep(.12, 2.2, arc) * a_style.x;
   v_width = .28 + a_style.y * .15;
   v_box = v_length + 2.5;
 
-  vec3 toLight = vec3(0.0, 0.0, .075) - p;
-  float distance2 = dot(toLight, toLight);
-  vec3 lightDirection = toLight * inversesqrt(max(distance2, .00001));
-  float cone = smoothstep(.30, .90, dot(-lightDirection, normalize(u_lightAim)));
-  float facing = max(dot(normal, lightDirection), 0.0);
-  v_light = 1.0 - exp(-3.4 * facing * cone / (.10 + distance2));
+  // The luminous crescent follows the SAME logarithmic streamlines as the
+  // particles. Phase selects a broad family of paths, never a screen-space beam.
+  float phase = a_seed.x - 3.55;
+  phase = atan(sin(phase), cos(phase));
+  float spread = .50 + .80 * exp(-arc / .35);
+  float ribbon = exp(-.5 * phase * phase / (spread * spread));
+  float shoulder = (.4 + arc / .75) * exp(-arc / .9) * 1.4;
+  float wallLight = .95 * ribbon * shoulder;
+  float coreLight = .94 * exp(-arc * arc / .016);
+  v_light = 1.0 - (1.0 - wallLight) * (1.0 - coreLight);
   float tilt = .96 + atan(u_scroll * .22) * .04;
   vec3 eye = vec3(0.0, -sin(tilt), cos(tilt)) * 14.0;
-  float grazing = abs(dot(normal, normalize(eye - p)));
-  float density = .08 + .92 * smoothstep(.015, .55, grazing);
-  density = mix(density, .55 + .45 * density, v_light);
+  float facingView = dot(normal, normalize(eye - p));
+  // Rear particles remain faintly visible, without competing tangent fields.
+  float density = .12 + .88 * smoothstep(-.12, .55, facingView);
+  // The illuminated ribbon is a volume of emissive particles, visible across
+  // the near-side turn as well as the inner wall. Ambient rear grains stay dim.
+  density = mix(density, 1.0, v_light * .85);
+  density *= .40 + .60 * smoothstep(.015, .20, arc);
   float fade = smoothstep(0.0, .008, life) * (1.0 - smoothstep(.90, 1.0, life));
-  v_alpha = (.20 + .70 * v_light) * a_seed.w * density * fade;
+  v_alpha = (.075 + .68 * sqrt(v_light)) * a_seed.w * density * fade;
   vec3 c = camera(p);
   float w = 14.0 - c.z;
   vec2 clip = vec2(screen.x / u_resolution.x * 2.0 - 1.0, 1.0 - screen.y / u_resolution.y * 2.0);
   gl_Position = vec4(clip * w, (40.1 / 39.9) * w - 8.0 / 39.9, w);
-  gl_PointSize = v_box * u_dpr;
+  gl_PointSize = mix(v_box, mix(36.0, 24.0, coreLight), u_glowPass) * u_dpr;
+  if (u_glowPass > .5 && v_light < .02) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }`;
 
 const particleFragment = `
 precision mediump float;
+uniform mediump float u_glowPass;
 varying mediump vec2 v_direction;
 varying mediump float v_length, v_box, v_width, v_alpha, v_light;
 void main() {
+  if (u_glowPass > .5) {
+    // Light is accumulated from the very same particles, before diffusion.
+    // The crisp particle pass is never blurred.
+    vec2 q = (gl_PointCoord - .5) * 2.0;
+    float radiance = exp(-dot(q, q) * 4.0) * v_alpha * pow(v_light, 1.2) * .04;
+    gl_FragColor = vec4(vec3(.98, .92, .80) * radiance, 1.0);
+    return;
+  }
   vec2 p = (gl_PointCoord - .5) * v_box;
   float along = dot(p, v_direction);
   float across = dot(p, vec2(-v_direction.y, v_direction.x));
@@ -106,14 +126,11 @@ precision highp float;
 varying highp vec2 v_uv;
 uniform sampler2D u_source;
 uniform vec2 u_step;
-uniform float u_extract;
 vec3 sampleLight(vec2 uv) {
-  vec3 color = texture2D(u_source, uv).rgb;
-  float luminance = dot(color, vec3(.2126, .7152, .0722));
-  return color * mix(1.0, smoothstep(.48, .76, luminance), u_extract);
+  return texture2D(u_source, uv).rgb;
 }
 void main() {
-  // An elongated kernel keeps the softness aligned with the lit fold.
+  // Local diffusion only: the curved surface radiance already forms the light.
   vec3 color = sampleLight(v_uv) * .227027;
   color += sampleLight(v_uv + u_step * 1.384615) * .316216;
   color += sampleLight(v_uv - u_step * 1.384615) * .316216;
@@ -128,7 +145,9 @@ uniform sampler2D u_scene, u_bloom;
 uniform float u_reading;
 void main() {
   vec3 color = texture2D(u_scene, v_uv).rgb;
-  color += texture2D(u_bloom, v_uv).rgb * .38;
+  // The bounded light field preserves variation without clipping its overlaps.
+  vec3 radiance = texture2D(u_bloom, v_uv).rgb;
+  color += (1.0 - color) * radiance * .95;
   float vignette = smoothstep(.35, .90, length((v_uv - .5) * vec2(.85, 1.0)));
   color *= 1.0 - .14 * vignette;
   float reading = smoothstep(.15, .9, u_reading);
@@ -205,8 +224,8 @@ export function createFlowRenderer(gl: WebGLRenderingContext) {
     const uniform = (p: WebGLProgram, name: string) => gl.getUniformLocation(p, name);
     const fieldLocations = { seed: gl.getAttribLocation(field, 'a_seed'), style: gl.getAttribLocation(field, 'a_style'),
       resolution: uniform(field, 'u_resolution'), scroll: uniform(field, 'u_scroll'), time: uniform(field, 'u_time'),
-      aim: uniform(field, 'u_lightAim'), dpr: uniform(field, 'u_dpr'), arcMap: uniform(field, 'u_arcMap[0]'), maxArc: uniform(field, 'u_maxArc') };
-    const blurLocations = { position: gl.getAttribLocation(blur, 'a_position'), source: uniform(blur, 'u_source'), step: uniform(blur, 'u_step'), extract: uniform(blur, 'u_extract') };
+      dpr: uniform(field, 'u_dpr'), glowPass: uniform(field, 'u_glowPass'), arcMap: uniform(field, 'u_arcMap[0]'), maxArc: uniform(field, 'u_maxArc') };
+    const blurLocations = { position: gl.getAttribLocation(blur, 'a_position'), source: uniform(blur, 'u_source'), step: uniform(blur, 'u_step') };
     const compositeLocations = { position: gl.getAttribLocation(composite, 'a_position'), scene: uniform(composite, 'u_scene'), bloom: uniform(composite, 'u_bloom'), reading: uniform(composite, 'u_reading') };
     const buffer = (target: number, data: Float32Array) => {
       const result = gl.createBuffer(); if (!result) throw new Error('Could not allocate flow geometry');
@@ -238,10 +257,11 @@ export function createFlowRenderer(gl: WebGLRenderingContext) {
       width = w; height = h; dpr = ratio;
       count = Math.min(MAX_PARTICLES, Math.max(40000, Math.round(width * height * .22)));
       const nextWidth = Math.max(1, Math.round(width * dpr)), nextHeight = Math.max(1, Math.round(height * dpr));
-      if (targets.length === 3 && nextWidth === pixelWidth && nextHeight === pixelHeight) return;
+      if (targets.length === 4 && nextWidth === pixelWidth && nextHeight === pixelHeight) return;
       pixelWidth = nextWidth; pixelHeight = nextHeight;
       releaseTargets();
       target(pixelWidth, pixelHeight);
+      target(Math.max(1, Math.round(pixelWidth / 3)), Math.max(1, Math.round(pixelHeight / 3)));
       target(Math.max(1, Math.round(pixelWidth / 3)), Math.max(1, Math.round(pixelHeight / 3)));
       target(Math.max(1, Math.round(pixelWidth / 3)), Math.max(1, Math.round(pixelHeight / 3)));
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -251,38 +271,38 @@ export function createFlowRenderer(gl: WebGLRenderingContext) {
       gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
     };
     const draw = ({ time, scroll, reading }: FlowState) => {
-      if (targets.length !== 3) return;
-      const [scene, first, second] = targets;
+      if (targets.length !== 4) return;
+      const [scene, emission, first, second] = targets;
       gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.bindFramebuffer(gl.FRAMEBUFFER, scene.framebuffer); gl.viewport(0, 0, scene.width, scene.height);
       gl.clearColor(.32, .302, .276, 1); gl.clear(gl.COLOR_BUFFER_BIT);
       gl.useProgram(field); gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
       gl.enableVertexAttribArray(fieldLocations.seed); gl.vertexAttribPointer(fieldLocations.seed, 4, gl.FLOAT, false, 24, 0);
       gl.enableVertexAttribArray(fieldLocations.style); gl.vertexAttribPointer(fieldLocations.style, 2, gl.FLOAT, false, 24, 16);
-      gl.uniform3f(fieldLocations.aim, ...LIGHT_AIM);
       gl.uniform2f(fieldLocations.resolution, width, height); gl.uniform1f(fieldLocations.scroll, scroll); gl.uniform1f(fieldLocations.time, time);
       gl.uniform1f(fieldLocations.dpr, dpr);
+      gl.uniform1f(fieldLocations.glowPass, 0);
+      gl.drawArrays(gl.POINTS, 0, count);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, emission.framebuffer); gl.viewport(0, 0, emission.width, emission.height);
+      gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      // Screen accumulation models bounded transmission, avoiding RGBA8 clipping
+      // before diffusion: light = 1 - product(1 - each particle contribution).
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR);
+      gl.uniform1f(fieldLocations.glowPass, 1);
+      gl.uniform1f(fieldLocations.dpr, dpr / 3);
       gl.drawArrays(gl.POINTS, 0, count);
       gl.disableVertexAttribArray(fieldLocations.seed); gl.disableVertexAttribArray(fieldLocations.style);
       gl.disable(gl.BLEND);
       gl.useProgram(blur); bindQuad(blurLocations.position); gl.uniform1i(blurLocations.source, 0);
-      // Projected direction of the lit, left-hand fold; much softer along it
-      // than across it. Only radiance from that fold enters these blur passes.
-      const radius = Math.min(width, height) * .020;
-      const tilt = .96 + Math.atan(scroll * .22) * .04;
-      const roll = -.12 + Math.sin(scroll * .20) * .025;
-      const y = LIGHT_AIM[1] * Math.cos(tilt) + LIGHT_AIM[2] * Math.sin(tilt);
-      const dx = LIGHT_AIM[0] * Math.cos(roll) - y * Math.sin(roll);
-      const dy = LIGHT_AIM[0] * Math.sin(roll) + y * Math.cos(roll);
-      const magnitude = Math.max(.001, Math.hypot(dx, dy));
-      const direction = [dx / magnitude, dy / magnitude];
+      // Keep diffusion local; the shared surface ribbon supplies all direction.
+      const radius = 4.0;
       gl.bindFramebuffer(gl.FRAMEBUFFER, first.framebuffer); gl.viewport(0, 0, first.width, first.height);
-      textureUnit(0, scene.texture); gl.uniform1f(blurLocations.extract, 1);
-      gl.uniform2f(blurLocations.step, direction[0] * radius / width, direction[1] * radius / height);
+      textureUnit(0, emission.texture);
+      gl.uniform2f(blurLocations.step, radius / width, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.bindFramebuffer(gl.FRAMEBUFFER, second.framebuffer); gl.viewport(0, 0, second.width, second.height);
-      textureUnit(0, first.texture); gl.uniform1f(blurLocations.extract, 0);
-      gl.uniform2f(blurLocations.step, -direction[1] * radius * .24 / width, direction[0] * radius * .24 / height);
+      textureUnit(0, first.texture);
+      gl.uniform2f(blurLocations.step, 0, radius / height);
       gl.drawArrays(gl.TRIANGLES, 0, 3); gl.disableVertexAttribArray(blurLocations.position);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, pixelWidth, pixelHeight);
       gl.useProgram(composite); bindQuad(compositeLocations.position);
