@@ -28,8 +28,10 @@ Fonts and company logos are stored locally. The page and animation work without 
 - `src/Home.tsx`: introduction and contact links
 - `src/Experience.tsx`: internships and education
 - `src/Particles.tsx`: background motion, pause, and reduced-motion handling
-- `src/FlowGeometry.ts`: the continuous curved surface and its coordinates
-- `src/FlowRenderer.ts`: moving particles, directional lighting, and glow derived from the illuminated particles
+- `src/FlowRenderer.ts`: the reflective crescent and fine material texture
+- `src/MaterialGrains.ts`: moving particles illuminated by the same reflection
+- `src/useOpeningSequence.ts`: the coordinated light and typography entrance
+- `docs/flow-model.md`: rendering model, motion, and accessibility behavior
 - `src/styles.css`: layout and typography
 - `public/`: local fonts, logos, and favicon
 

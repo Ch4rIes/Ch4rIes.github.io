@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react';
 import Particles from './Particles';
 import ExperienceSection from './Experience';
+import { useOpeningSequence } from './useOpeningSequence';
 
 export default function Home() {
   const main = useRef<HTMLElement>(null);
+  const opening = useOpeningSequence(main);
 
   useEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -38,7 +40,7 @@ export default function Home() {
   }, []);
 
   return <main ref={main} id="main" className="home">
-    <Particles />
+    <Particles opening={opening} />
     <section className="hero">
       <div className="hero-copy"><h1>Charles Zuo</h1>
       <p className="intro">Engineer, Problem Solver</p></div>
